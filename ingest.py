@@ -200,7 +200,7 @@ def main():
             json.dump(failed, out, indent=2)
         print("\nFailed list saved to failed_ingestions.json")
 
-
-collection_creation()
-sep()
-main()
+if __name__ == "__main__":
+    collection_creation()
+    sep()
+    main()
