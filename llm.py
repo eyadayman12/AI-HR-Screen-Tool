@@ -5,64 +5,123 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-gemini_llm = LLM(
-    model="gemini/gemini-3.1-flash-lite-preview",
-    api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=0.2,       # low temperature = consistent, structured outputs
-    max_tokens=8192,
-)
 
-
-groq_llm = LLM(
-    model="groq/llama-3.3-70b-versatile",
-    api_key=os.getenv("GROQ_API_KEY"),
-    temperature=0.2,
-    max_tokens=8192,
-)
-
-cohere_llm = LLM(
-    model="cohere/command-a-03-2025",
-    temperature=0.0,
-    api_key=os.getenv("COHERE_API_KEY")
-)
+# ── LLM DEFINITIONS ───────────────────────────────────────────────────────────
 
 hunter_llm = LLM(
     model="openrouter/openrouter/hunter-alpha",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
-    temperature=0.0
+    temperature=0.0,
 )
 
-def get_llm_with_fallback(max_retries: int = 3, retry_wait: int = 15) -> LLM:
-    """
-    Try Gemini up to max_retries times.
-    If all attempts fail, fall back to Groq LLaMA 3.3 70B.
+cohere_llm = LLM(
+    model="cohere/command-a-03-2025",
+    temperature=0.0,
+    api_key=os.getenv("COHERE_API_KEY"),
+)
 
-    Returns the LLM object to assign to agents.
-    Note: this does a lightweight connectivity check by attempting
-    a minimal completion — if it fails, we fall back before the
-    full crew run starts, not mid-run.
-    """
-    return hunter_llm
-    print("Checking primary LLM (Gemini 3.1 Flash lite)...")
+gemini_llm = LLM(
+    model="gemini/gemini-3.1-pro-preview",
+    api_key=os.getenv("GEMINI_API_KEY"),
+    temperature=0.2,
+)
 
-    for attempt in range(1, max_retries + 1):
+groq_llm = LLM(
+    model="groq/llama-3.3-70b-versatile",
+    api_key=os.getenv("GROQ_API_KEY"),
+    temperature=0.2,
+)
+
+# Ordered fallback chain — first available wins at startup,
+# and ResilientLLM cascades through this list on mid-run failures.
+FALLBACK_CHAIN = [gemini_llm, cohere_llm, hunter_llm, groq_llm]
+FALLBACK_NAMES = ["Gemini 3.1 pro", "Cohere Command-A", "Hunter Alpha (OpenRouter)", "LLaMA 3.3 70B (Groq)"]
+
+
+# ── RESILIENT WRAPPER ─────────────────────────────────────────────────────────
+
+class ResilientLLM:
+
+    def __init__(self, starting_index: int = 0):
+        self._index = starting_index
+        self._active = FALLBACK_CHAIN[self._index]
+        self._active_name = FALLBACK_NAMES[self._index]
+
+  
+    def __getattr__(self, name):
+        return getattr(self._active, name)
+
+    def call(self, messages, **kwargs):
+        """
+        Attempt the call on the active LLM. On failure, cascade through
+        the fallback chain. Raises only if all providers are exhausted.
+        """
+        # Start from the current active index so we don't retry already-failed providers
+        for i in range(self._index, len(FALLBACK_CHAIN)):
+            llm = FALLBACK_CHAIN[i]
+            name = FALLBACK_NAMES[i]
+            try:
+                result = llm.call(messages, **kwargs)
+                # If we switched providers, update the active one for future calls
+                if i != self._index:
+                    print(f"\n  [ResilientLLM] Switched to: {name} (will use for remaining calls)")
+                    self._index = i
+                    self._active = llm
+                    self._active_name = name
+                return result
+
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = any(k in error_str.lower() for k in ("429", "quota", "rate limit", "too many"))
+                is_provider_error = any(k in error_str.lower() for k in ("400", "provider returned", "bad request", "stealth"))
+
+                if is_rate_limit:
+                    print(f"\n  [ResilientLLM] {name} rate limited. Trying next provider...")
+                elif is_provider_error:
+                    print(f"\n  [ResilientLLM] {name} provider error: {error_str[:120]}. Trying next...")
+                else:
+                    print(f"\n  [ResilientLLM] {name} failed: {error_str[:120]}. Trying next...")
+
+                if i == len(FALLBACK_CHAIN) - 1:
+                    raise RuntimeError(
+                        f"All LLM providers exhausted. Last error from {name}: {e}"
+                    )
+                time.sleep(3)
+
+        raise RuntimeError("All LLM providers exhausted.")
+
+
+    @property
+    def model(self):
+        return self._active.model
+
+    def __repr__(self):
+        return f"ResilientLLM(active={self._active_name})"
+
+
+# ── STARTUP PROBE ─────────────────────────────────────────────────────────────
+
+def get_llm_with_fallback() -> ResilientLLM:
+    """
+    Probe each LLM in FALLBACK_CHAIN with a minimal test call.
+    Return a ResilientLLM starting at the first provider that responds.
+
+    If all probes fail, still return a ResilientLLM starting at index 0
+    (Hunter) — the actual failure will be caught and cascaded at call time.
+    """
+    return gemini_llm
+    probe_message = [{"role": "user", "content": "reply with the single word: ok"}]
+    for i, (llm, name) in enumerate(zip(FALLBACK_CHAIN, FALLBACK_NAMES)):
+        print(f"  Probing {name}...")
         try:
-            test = gemini_llm.call([{"role": "user", "content": "reply with the single word: ok"}])
-            if test:
-                print(f"Gemini 3.1 Flash lite is available. Using as primary LLM.")
-                return gemini_llm
+            result = llm.call(probe_message)
+            if result:
+                print(f"  ✓ {name} is available. Using as primary LLM.\n")
+                return ResilientLLM(starting_index=i)
         except Exception as e:
-            error_str = str(e).lower()
-            is_rate_limit = "429" in error_str or "quota" in error_str or "rate" in error_str
+            print(f"  ✗ {name} unavailable: {str(e)[:80]}")
+            time.sleep(2)
 
-            if is_rate_limit:
-                print(f"  [Attempt {attempt}/{max_retries}] Gemini rate limited — waiting {retry_wait}s...")
-            else:
-                print(f"  [Attempt {attempt}/{max_retries}] Gemini error: {e}")
-
-            if attempt < max_retries:
-                time.sleep(retry_wait)
-
-    print(f"Gemini failed after {max_retries} attempts. Switching to backup: LLaMA 3.3 70B (Groq)")
-    return groq_llm
+    print("\n  [WARNING] All LLM probes failed. Starting with Hunter — will cascade on first call.\n")
+    return ResilientLLM(starting_index=0)
