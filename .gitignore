@@ -1,0 +1,16 @@
+# Data and large files
+data/
+ingestion_progress.json
+
+# Environment variables and secrets
+.env
+
+# Python internals
+__pycache__/
+*.pyc
+
+# Virtual environments
+hr_env/
+
+# Development notebooks
+playground.ipynb
