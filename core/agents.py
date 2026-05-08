@@ -1,5 +1,6 @@
 from crewai import Agent
 from core.llm import  gemini_llm
+from app.schema import HiringReport
 
 llm = gemini_llm
 
@@ -24,7 +25,7 @@ job_analyst = Agent(
         "You also flag realistic compensation bands and typical notice periods for the "
         "role so the committee can plan accordingly."
     ),
-    verbose=True,
+    verbose=False,
     allow_delegation=False,
     llm=llm,
 )
@@ -50,7 +51,7 @@ candidate_retriever = Agent(
         "You have zero interest in making hiring decisions; your job is to put accurate, "
         "well-structured raw material in front of the people who do."
     ),
-    verbose=True,
+    verbose=False,
     allow_delegation=False,
     llm=llm,
 )
@@ -61,10 +62,15 @@ candidate_evaluator = Agent(
     goal=(
         "Score each candidate from 0 to 10 against the structured job requirements, "
         "respecting the priority weights assigned by the job analyst. "
-        "For each candidate produce: an overall weighted fit score, a technical skills "
-        "score, an experience score, an education score, a top-3 strengths summary "
-        "(evidence-based), a top-2 gaps or risk flags summary, a compensation fit note "
-        "(if inferable), and a one-line verdict. "
+        "For each candidate produce a multi-dimension scorecard:\n"
+        "- technical_fit (0–10): alignment with technical skills and tools required\n"
+        "- experience_level (0–10): years and relevance of experience\n"
+        "- culture_signals (0–10): soft skills, communication, leadership potential\n"
+        "- red_flags (0–10): risk assessment (lower is better - score 10 = no red flags, 0 = major concerns)\n"
+        "- overall_score (0–10): weighted average of the four dimensions above\n"
+        "Also include: technical_skills_score, experience_score, education_score (traditional metrics), "
+        "top-3 strengths (evidence-based), top-2 gaps or risk flags, compensation fit note (if inferable), "
+        "and a one-line verdict (STRONG FIT / GOOD FIT / PARTIAL FIT / WEAK FIT).\n"
         "Apply identical criteria to every candidate — no gut feelings, no order bias. "
         "At the end, produce a ranked list and explicitly call out any candidate whose "
         "data quality issues made scoring uncertain."
@@ -76,9 +82,12 @@ candidate_evaluator = Agent(
         "You treat every CV as a set of evidence points against a rubric — nothing more. "
         "You have no favorites and no gut feelings. "
         "Your scores are always justifiable with specific evidence from the candidate's profile, "
-        "and you never hide uncertainty — if data is thin, you say so."
+        "and you never hide uncertainty — if data is thin, you say so. "
+        "You understand that hiring is multi-dimensional: technical skills matter, but so do "
+        "experience, cultural fit, and risk factors. Your multi-dimensional scoring provides "
+        "hiring managers with a complete picture to make informed decisions."
     ),
-    verbose=True,
+    verbose=False,
     allow_delegation=False,
     llm=llm,
 )
@@ -94,8 +103,16 @@ report_writer = Agent(
         "individual executive summaries per candidate, detailed profiles of the top 3, "
         "a pipeline section for mid-tier candidates, a brief not-recommended section, "
         "suggested interview structures for top candidates, a risk and data-quality note, "
+        "a mandatory 'Limitations & Bias Considerations' section addressing responsible AI use, "
         "and clear next steps with owners and a suggested decision deadline. "
-        "Tone: professional, direct, zero HR jargon. Readable in under 5 minutes."
+        "Tone: professional, direct, zero HR jargon. Readable in under 5 minutes. "
+        "CRITICAL: You must output your final report in TWO formats: "
+        "1. A structured JSON object matching the HiringReport schema with fields: "
+        "   job_title, profession, ranked_candidates (list with rank, name, overall_score, "
+        "   technical_fit, experience_level, culture_signals, red_flags, technical_skills_score, "
+        "   experience_score, education_score, strengths, gaps, verdict, compensation_fit), "
+        "   top_recommendation, summary, generated_at, total_candidates_evaluated. "
+        "2. A markdown report for human readability."
     ),
     backstory=(
         "You are a former Chief People Officer who now consults for executive search firms. "
@@ -106,9 +123,13 @@ report_writer = Agent(
         "You always flag risks honestly, because a surprise in the interview stage "
         "costs everyone more than a hard truth in the report. "
         "Your reports are famous for being clear, scannable, evidence-based, and "
-        "completely free of filler."
+        "completely free of filler. You are also meticulous about data structure — "
+        "you understand that machine-readable JSON is as important as human-readable markdown "
+        "for downstream systems and integrations. Most importantly, you are deeply committed "
+        "to responsible AI practices — you always include limitations and bias considerations "
+        "in your reports to ensure AI is used as an assistive tool, not a decision-maker."
     ),
-    verbose=True,
+    verbose=False,
     allow_delegation=False,
     llm=llm,
 )
