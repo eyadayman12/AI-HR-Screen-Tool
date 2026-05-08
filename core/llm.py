@@ -28,7 +28,6 @@ FALLBACK_CHAIN = [gemini_llm, cohere_llm, hunter_llm, groq_llm]
 FALLBACK_NAMES = ["Gemini 3.1 pro", "Cohere Command-A", "Hunter Alpha (OpenRouter)", "LLaMA 3.3 70B (Groq)"]
 
 
-
 class ResilientLLM:
 
     def __init__(self, starting_index: int = 0):
@@ -45,13 +44,11 @@ class ResilientLLM:
         Attempt the call on the active LLM. On failure, cascade through
         the fallback chain. Raises only if all providers are exhausted.
         """
-        # Start from the current active index so we don't retry already-failed providers
         for i in range(self._index, len(FALLBACK_CHAIN)):
             llm = FALLBACK_CHAIN[i]
             name = FALLBACK_NAMES[i]
             try:
                 result = llm.call(messages, **kwargs)
-                # If we switched providers, update the active one for future calls
                 if i != self._index:
                     print(f"\n  [ResilientLLM] Switched to: {name} (will use for remaining calls)")
                     self._index = i

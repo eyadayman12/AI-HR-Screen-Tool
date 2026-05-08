@@ -19,6 +19,7 @@ REPORT_SECTIONS = [
     "PIPELINE CANDIDATES",
     "NOT RECOMMENDED",
     "RISK & DATA QUALITY NOTES",
+    "LIMITATIONS & BIAS CONSIDERATIONS",
     "NEXT STEPS",
     "FINAL RECOMMENDATION",
 ]
@@ -140,12 +141,15 @@ def build_tasks(job_description: str, profession: str) -> list:
             f"You will receive the structured job requirements (with priority weights) "
             f"and the {settings.top_k} clean candidate profiles. "
             f"Score EVERY candidate. Do not skip any.\n\n"
-            f"For each candidate produce a scorecard:\n"
-            f"- Overall weighted fit score (0–10): weight technical skills highest, "
-            f"  then experience, then education, per the priority weights in the requirements\n"
-            f"- Technical skills match score (0–10) with brief justification\n"
-            f"- Experience match score (0–10) with brief justification\n"
-            f"- Education match score (0–10) with brief justification\n"
+            f"For each candidate produce a multi-dimension scorecard:\n"
+            f"- technical_fit (0–10): alignment with technical skills and tools required\n"
+            f"- experience_level (0–10): years and relevance of experience\n"
+            f"- culture_signals (0–10): soft skills, communication, leadership potential\n"
+            f"- red_flags (0–10): risk assessment (10 = no red flags, 0 = major concerns)\n"
+            f"- overall_score (0–10): weighted average of the four dimensions above\n"
+            f"- technical_skills_score (0–10): traditional technical skills metric\n"
+            f"- experience_score (0–10): traditional experience metric\n"
+            f"- education_score (0–10): traditional education metric\n"
             f"- Top 3 strengths — specific, evidence-based, tied to job requirements\n"
             f"- Top 2 gaps or risk flags — be honest; include employment gaps, "
             f"  missing critical skills, or data quality issues\n"
@@ -156,13 +160,15 @@ def build_tasks(job_description: str, profession: str) -> list:
             f"- Apply identical criteria to all {settings.top_k} candidates\n"
             f"- Every score must cite specific evidence from the profile\n"
             f"- Do not let candidate order or name influence scores\n"
-            f"- If a profile had data quality issues, note how that affected scoring confidence\n\n"
+            f"- If a profile had data quality issues, note how that affected scoring confidence\n"
+            f"- For the overall_score, use these default weights unless the job requirements "
+            f"  suggest otherwise: technical_fit (40%), experience_level (30%), culture_signals (20%), red_flags (10%)\n\n"
             f"End with a ranked list (highest to lowest overall score) and a one-paragraph "
             f"synthesis noting the overall pool quality and any patterns worth flagging "
             f"(e.g., 'most candidates lack X', 'two candidates have very similar profiles')."
         ),
         expected_output=(
-            f"A complete scorecard for all {settings.top_k} candidates with all required fields. "
+            f"A complete multi-dimension scorecard for all {settings.top_k} candidates with all required fields. "
             "Followed by a ranked list from highest to lowest overall fit score. "
             "Followed by a pool quality synthesis paragraph."
         ),
@@ -203,11 +209,48 @@ def build_tasks(job_description: str, profession: str) -> list:
             "8. RISK & DATA QUALITY NOTES — flag any scoring uncertainty caused by "
             "   incomplete profiles, employment gaps, or compensation mismatches. "
             "   Keep it factual and brief.\n\n"
-            "9. NEXT STEPS — a concrete checklist: who reaches out to the top candidate, "
-            "   who schedules, suggested decision deadline, and whether the pipeline should "
-            "   be kept open or closed.\n\n"
-            "10. FINAL RECOMMENDATION — one decisive paragraph: who to interview first, "
-            "    why, and what success looks like. No hedging.\n\n"
+            "9. LIMITATIONS & BIAS CONSIDERATIONS — a mandatory responsible AI section that must include:\n"
+            "   - The AI does not have access to candidate demographics (age, gender, race, etc.)\n"
+            "   - The AI cannot guarantee bias-free ranking; scores are recommendations not decisions\n"
+            "   - Human review is mandatory before any offer or rejection\n"
+            "   - The scoring is based solely on resume text; it may miss context not captured in the document\n"
+            "   - Employment gaps or career changes are not automatically negative; context matters\n"
+            "   - The system should be used as one input among many in a holistic hiring process\n\n"
+            "10. NEXT STEPS — a concrete checklist: who reaches out to the top candidate, "
+            "    who schedules, suggested decision deadline, and whether the pipeline should "
+            "    be kept open or closed.\n\n"
+            "11. FINAL RECOMMENDATION — one decisive paragraph: who to interview first, "
+            "     why, and what success looks like. No hedging.\n\n"
+            "CRITICAL OUTPUT REQUIREMENT: You must output your final result in TWO parts:\n"
+            "PART 1 - JSON STRUCTURED DATA: Begin your output with a valid JSON object matching this schema:\n"
+            "{\n"
+            '  "job_title": "extracted from job description",\n'
+            '  "profession": "the profession filter used",\n'
+            '  "ranked_candidates": [\n'
+            '    {\n'
+            '      "rank": 1,\n'
+            '      "name": "candidate name",\n'
+            '      "overall_score": 8.5,\n'
+            '      "technical_fit": 9.0,\n'
+            '      "experience_level": 8.0,\n'
+            '      "culture_signals": 8.5,\n'
+            '      "red_flags": 9.0,\n'
+            '      "technical_skills_score": 9.0,\n'
+            '      "experience_score": 8.0,\n'
+            '      "education_score": 8.5,\n'
+            '      "strengths": ["strength1", "strength2", "strength3"],\n'
+            '      "gaps": ["gap1", "gap2"],\n'
+            '      "verdict": "STRONG FIT",\n'
+            '      "compensation_fit": "appropriate/mismatch (if inferable)"\n'
+            '    }\n'
+            '  ],\n'
+            '  "top_recommendation": "name of top candidate with brief reason",\n'
+            '  "summary": "executive summary text",\n'
+            '  "generated_at": "ISO 8601 timestamp",\n'
+            '  "total_candidates_evaluated": 10\n'
+            "}\n\n"
+            "PART 2 - MARKDOWN REPORT: After the JSON, include the full markdown report "
+            "with all sections. Separate the JSON and markdown with '=== MARKDOWN REPORT ===' on its own line.\n\n"
             "Tone: professional, direct, no HR jargon, no filler sentences. "
             "If a section has nothing meaningful to say, write 'N/A — [reason]' rather than padding."
         ),
@@ -218,7 +261,9 @@ def build_tasks(job_description: str, profession: str) -> list:
             "The FINAL RECOMMENDATION must be a clear, unambiguous statement "
             "naming the top candidate and the decisive reason. "
             "The report must be self-contained — a reader with no prior context "
-            "should be able to act on it immediately."
+            "should be able to act on it immediately. "
+            "The output must begin with valid JSON structured data followed by '=== MARKDOWN REPORT ===' "
+            "and then the full markdown report."
         ),
         agent=report_writer,
         context=[task_analyze_job, task_evaluate_candidates],
