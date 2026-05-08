@@ -5,3 +5,7 @@ google-genai==1.75.0
 crewai==1.14.4
 python-dotenv==1.2.2
 streamlit==1.57.0
+litellm==1.83.14
+cohere==6.1.0
+openrouter==0.9.1
+groq==1.2.0

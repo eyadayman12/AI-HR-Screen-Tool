@@ -1,19 +1,14 @@
 from crewai import Task
-from agents import job_analyst, candidate_retriever, candidate_evaluator, report_writer
+from core.agents import job_analyst, candidate_retriever, candidate_evaluator, report_writer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 from google import genai
 from google.genai import types
-import os
-from dotenv import load_dotenv
+from core.settings_config import settings
 
-load_dotenv()
-
-qdrant = QdrantClient("http://localhost:6333", timeout=60)
-gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-COLLECTION = "hr_resumes"
-EMBEDDING_MODEL = "gemini-embedding-001"
-TOP_K = 10
+qdrant_config = settings.qdrant_host + ":" + str(settings.qdrant_port)
+qdrant = QdrantClient(qdrant_config, timeout=settings.qdrant_timeout)
+gemini_client = genai.Client()
 
 REPORT_SECTIONS = [
     "ROLE REQUIREMENTS RECAP",
@@ -35,17 +30,17 @@ def retrieve_candidates(job_description: str, profession: str) -> str:
     This runs BEFORE the crew starts — the crew never touches Qdrant directly.
     """
     result = gemini_client.models.embed_content(
-        model=EMBEDDING_MODEL,
+        model=settings.embedding_model,
         contents=job_description,
         config=types.EmbedContentConfig(task_type="SEMANTIC_SIMILARITY")
     )
     query_vector = result.embeddings[0].values
 
     hits = qdrant.query_points(
-        collection_name=COLLECTION,
+        collection_name=settings.collection_name,
         query=query_vector,
         using="text_vectors",
-        limit=TOP_K,
+        limit=settings.top_k,
         with_payload=True,
     )
 
@@ -72,9 +67,9 @@ def build_tasks(job_description: str, profession: str) -> list:
     This means the crew processes all 10 candidates in one pass per task.
     """
  
-    print(f"\nQuerying Qdrant for top {TOP_K} '{profession}' candidates...")
+    print(f"\nQuerying Qdrant for top {settings.top_k} '{profession}' candidates...")
     retrieved_candidates = retrieve_candidates(job_description, profession)
-    print(f"Retrieved {TOP_K} candidates. Handing off to agents...\n")
+    print(f"Retrieved {settings.top_k} candidates. Handing off to agents...\n")
  
     # ── TASK 1: Job Analysis ─────────────────────────────────────────────────
     task_analyze_job = Task(
@@ -110,7 +105,7 @@ def build_tasks(job_description: str, profession: str) -> list:
     # ── TASK 2: Candidate Presentation ──────────────────────────────────────
     task_present_candidates = Task(
         description=(
-            f"The following {TOP_K} candidates have been retrieved from the resume database "
+            f"The following {settings.top_k} candidates have been retrieved from the resume database "
             f"based on semantic similarity to the job description. "
             f"Read each candidate's raw resume and produce a clean, structured profile.\n\n"
             f"For each candidate extract:\n"
@@ -129,7 +124,7 @@ def build_tasks(job_description: str, profession: str) -> list:
             f"{retrieved_candidates}"
         ),
         expected_output=(
-            f"A clean structured profile for each of the {TOP_K} candidates, "
+            f"A clean structured profile for each of the {settings.top_k} candidates, "
             "clearly numbered (Candidate 1, Candidate 2, etc.). "
             "Every field must be filled in or explicitly marked 'Not specified'. "
             "Each profile ends with a data quality flag (Clean / Minor gaps / Significant gaps) "
@@ -143,7 +138,7 @@ def build_tasks(job_description: str, profession: str) -> list:
     task_evaluate_candidates = Task(
         description=(
             f"You will receive the structured job requirements (with priority weights) "
-            f"and the {TOP_K} clean candidate profiles. "
+            f"and the {settings.top_k} clean candidate profiles. "
             f"Score EVERY candidate. Do not skip any.\n\n"
             f"For each candidate produce a scorecard:\n"
             f"- Overall weighted fit score (0–10): weight technical skills highest, "
@@ -158,7 +153,7 @@ def build_tasks(job_description: str, profession: str) -> list:
             f"  with typical band for this role (if inferable)\n"
             f"- Verdict: STRONG FIT / GOOD FIT / PARTIAL FIT / WEAK FIT\n\n"
             f"Scoring rules:\n"
-            f"- Apply identical criteria to all {TOP_K} candidates\n"
+            f"- Apply identical criteria to all {settings.top_k} candidates\n"
             f"- Every score must cite specific evidence from the profile\n"
             f"- Do not let candidate order or name influence scores\n"
             f"- If a profile had data quality issues, note how that affected scoring confidence\n\n"
@@ -167,7 +162,7 @@ def build_tasks(job_description: str, profession: str) -> list:
             f"(e.g., 'most candidates lack X', 'two candidates have very similar profiles')."
         ),
         expected_output=(
-            f"A complete scorecard for all {TOP_K} candidates with all required fields. "
+            f"A complete scorecard for all {settings.top_k} candidates with all required fields. "
             "Followed by a ranked list from highest to lowest overall fit score. "
             "Followed by a pool quality synthesis paragraph."
         ),

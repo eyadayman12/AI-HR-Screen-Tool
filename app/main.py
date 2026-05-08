@@ -1,11 +1,6 @@
 from crewai import Crew, Process
 from core.agents import job_analyst, candidate_retriever, candidate_evaluator, report_writer
 from core.tasks import build_tasks
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
 
 JOB_DESCRIPTION = """
 We are looking for a Senior Data Engineer to join our fintech data platform team.
