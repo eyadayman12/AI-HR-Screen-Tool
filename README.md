@@ -1,745 +1,361 @@
-# AI HR Resume Screener
+[![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![CrewAI](https://img.shields.io/badge/CrewAI-multi--agent-7C3AED)](https://www.crewai.com/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-vector--search-DC2626?logo=qdrant&logoColor=white)](https://qdrant.tech/)
+[![Gemini](https://img.shields.io/badge/Gemini-embeddings%20%2B%20LLM-4285F4?logo=google&logoColor=white)](https://aistudio.google.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-16A34A)](LICENSE)
+[![CI](https://github.com/eyadayman12/AI-HR-Screen-Tool/actions/workflows/ci.yml/badge.svg)](https://github.com/eyadayman12/AI-HR-Screen-Tool/actions)
 
 **A multi-agent AI system that screens and ranks job candidates using RAG, vector search, and a sequential CrewAI pipeline.**
 
 ---
 
-## Table of Contents
+## ⚡ Quick Start (Docker)
 
-1. [Project Overview](#1-project-overview)
-2. [System Architecture](#2-system-architecture)
-3. [How It Works — Three Phases](#3-how-it-works--three-phases)
-4. [Project Structure](#4-project-structure)
-5. [Prerequisites](#5-prerequisites)
-6. [Installation](#6-installation)
-7. [Configuration](#7-configuration)
-8. [Running the System](#8-running-the-system)
-9. [Module Reference](#9-module-reference)
-   - [ingest.py](#91-ingestpy)
-   - [llm.py](#92-llmpy)
-   - [agents.py](#93-agentspy)
-   - [tasks.py](#94-taskspy)
-   - [main.py](#95-mainpy)
-10. [The Agent Pipeline](#10-the-agent-pipeline)
-11. [RAG & Qdrant — How Retrieval Works](#11-rag--qdrant--how-retrieval-works)
-12. [LLM Strategy — Primary & Fallback](#12-llm-strategy--primary--fallback)
-13. [Output — The Hiring Report](#13-output--the-hiring-report)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Design Decisions & Rationale](#15-design-decisions--rationale)
+The fastest way to run the full stack — Qdrant, the API, and all dependencies — in one command. No Python environment setup required.
 
----
+**Prerequisites:** [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) installed.
 
-## 1. Project Overview
-
-The AI HR Resume Screener is a locally-runnable applied AI system that automates the first stage of the hiring pipeline: screening a large pool of resumes and producing a ranked shortlist with a written recommendation.
-
-Given a job description and a target career category, the system:
-
-1. Queries a Qdrant vector database containing 2,500 embedded resumes
-2. Retrieves the top 10 most semantically relevant candidates using metadata-filtered vector search
-3. Passes those candidates through a four-agent CrewAI pipeline that analyzes, evaluates, and ranks them
-4. Outputs a professional `hiring_report.md` ready for a hiring committee
-
-The system was built as a live demo for the NationAI Applied AI Instructor role assessment. It demonstrates RAG, multi-agent orchestration, vector databases, semantic search, LLM fallback strategies, and responsible AI considerations — all in a single cohesive application.
-
----
-
-## 2. System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  PHASE 1 — Offline Ingestion (runs once)                            │
-│                                                                     │
-│  2,500 PDFs  ──►  pdfplumber  ──►  Gemini Embed 001  ──►  Qdrant   │
-│  (24 career dirs)   (extract)     (3072-dim vector)   (upsert +    │
-│                                                         payload)    │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                    stored vectors persist in Qdrant
-                                  │
-┌─────────────────────────────────────────────────────────────────────┐
-│  PHASE 2 — Query & RAG (runs every time)                            │
-│                                                                     │
-│  HR Manager  ──►  Gemini Embed  ──►  Qdrant filtered search        │
-│  (job desc +      (job desc →        (profession filter +           │
-│   career)          vector)            cosine similarity)            │
-│                                              │                      │
-│                                        Top 10 candidates            │
-└──────────────────────────────────────────────┼──────────────────────┘
-                                               │
-┌──────────────────────────────────────────────▼──────────────────────┐
-│  PHASE 3 — CrewAI Agent Pipeline (sequential)                       │
-│                                                                     │
-│  Job Analyst ──► CV Retriever ──► Evaluator ──► Report Writer      │
-│  (parse JD)     (clean profiles)  (score 0-10)  (hiring_report.md) │
-│                                                                     │
-│  LLM: Gemini 2.0 Flash  ──(fails 3×)──►  LLaMA 3.3 70B (Groq)     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 3. How It Works — Three Phases
-
-### Phase 1 — Offline Ingestion
-
-This phase runs **once** before any queries are made. It converts your resume library into a searchable vector database.
-
-For each PDF in your dataset:
-1. `pdfplumber` extracts raw text with layout-awareness (`x_tolerance=3, y_tolerance=3`)
-2. The text is sent to **Gemini Embedding 001** which returns a 3072-dimensional float vector representing the semantic meaning of the resume
-3. The vector is upserted into a Qdrant collection named `hr_resumes` along with metadata payload: the profession/career category, the raw resume text, and the file path
-
-The ingestion pipeline includes rate limit handling (Gemini free tier: 100 req/min, 1,000 req/day), automatic retry on 429 errors, and a progress file so the process can be safely stopped and resumed across multiple days.
-
-### Phase 2 — Query & RAG Retrieval
-
-Each time a hiring manager wants to screen candidates:
-
-1. The job description is embedded using the same Gemini model into a 3072-dim vector
-2. Qdrant performs a **metadata-filtered vector search**: it first narrows the search space to only resumes in the specified career category (e.g. `profession="ENGINEERING"`), then finds the top 10 most similar vectors using cosine similarity
-3. The 10 retrieved resume texts and their similarity scores are passed into the agent pipeline
-
-This is the core RAG (Retrieval-Augmented Generation) step. The LLM agents never see the other 2,490 resumes — they only work with the pre-filtered shortlist.
-
-### Phase 3 — CrewAI Agent Pipeline
-
-Four specialized agents run sequentially, each receiving the outputs of all previous agents as context:
-
-| Agent | Input | Output |
-|---|---|---|
-| Job Analyst | Raw job description | Structured requirements doc |
-| CV Retriever | 10 raw resume texts + requirements | 10 clean structured profiles |
-| Evaluator | Profiles + requirements | 10 scorecards (0–10) with verdicts |
-| Report Writer | All scorecards | `hiring_report.md` |
-
-The final output is a complete hiring report saved to disk.
-
----
-
-## 4. Project Structure
-
-```
-project/
-│
-├── ingest.py                  # Phase 1: PDF extraction + Qdrant ingestion
-├── llm.py                     # LLM configuration: primary + fallback logic
-├── agents.py                  # 4 CrewAI agent definitions
-├── tasks.py                   # 4 task definitions + Qdrant retrieval function
-├── main.py                    # Entry point: configure job + run the crew
-│
-├── data/
-│   └── data/
-│       ├── ENGINEERING/       # One directory per career category
-│       │   ├── 10001.pdf
-│       │   └── ...
-│       ├── FINANCE/
-│       ├── FITNESS/
-│       └── ...                # 24 total career directories
-│
-├── ingestion_progress.json    # Auto-generated: tracks ingested files
-├── failed_ingestions.json     # Auto-generated: logs failed ingestions
-├── hiring_report.md           # Auto-generated: final output report
-│
-└── .env                       # API keys (never commit to version control)
-```
-
----
-
-## 5. Prerequisites
-
-| Requirement | Version | Notes |
-|---|---|---|
-| Python | 3.10+ | |
-| Docker | Any recent | For running Qdrant locally |
-| Qdrant | Latest | Runs as a Docker container |
-| Gemini API key | — | Free tier sufficient for testing |
-| Groq API key | — | Free at console.groq.com |
-
----
-
-## 6. Installation
-
-### Step 1 — Clone and set up Python environment
+**Step 1 — Clone the repo and create your `.env` file:**
 
 ```bash
-git clone <your-repo>
-cd hr-resume-screener
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+git clone https://github.com/eyadayman12/AI-HR-Screen-Tool.git
+cd AI-HR-Screen-Tool
+cp .env.example .env          # then open .env and fill in your API keys
 ```
 
-### Step 2 — Install dependencies
-
-```bash
-pip install crewai qdrant-client pdfplumber google-genai python-dotenv
-```
-
-### Step 3 — Start Qdrant with Docker
-
-```bash
-docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
-```
-
-Qdrant will be available at `http://localhost:6333`. You can verify it's running by visiting `http://localhost:6333/dashboard` in your browser.
-
-### Step 4 — Set up your resume dataset
-
-Place your PDF resumes in the following structure:
-
-```
-data/
-└── data/
-    ├── ENGINEERING/
-    │   ├── 10001.pdf
-    │   └── 10002.pdf
-    ├── FINANCE/
-    └── FITNESS/
-```
-
-The directory names become the `profession` field stored in Qdrant. Use the exact same casing when querying (see [Configuration](#7-configuration)).
-
----
-
-## 7. Configuration
-
-Create a `.env` file in the project root:
+Your `.env` file needs these two keys at minimum:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
-OPENROUTER_API_KEY=your_openrouter_key_here    # optional
-COHERE_API_KEY=your_cohere_key_here            # optional
 ```
 
-**Getting API keys:**
-- **Gemini**: [aistudio.google.com](https://aistudio.google.com) → Get API key (free tier)
-- **Groq**: [console.groq.com](https://console.groq.com) → Create API key (free tier)
+Get them free at [aistudio.google.com](https://aistudio.google.com) (Gemini) and [console.groq.com](https://console.groq.com) (Groq).
 
-In `main.py`, configure the job inputs:
-
-```python
-JOB_DESCRIPTION = """
-We are looking for a Senior Data Engineer...
-"""
-
-PROFESSION = "ENGINEERING"   # Must exactly match a directory name in your dataset
-```
-
-> **Important:** `PROFESSION` is case-sensitive and must match exactly how the directory was named when ingestion ran. Run the snippet below to check what values are stored in Qdrant:
-> ```python
-> from qdrant_client import QdrantClient
-> client = QdrantClient("http://localhost:6333")
-> result = client.scroll("hr_resumes", limit=5, with_payload=True)
-> print([p.payload["profession"] for p in result[0]])
-> ```
-
----
-
-## 8. Running the System
-
-### Step 1 — Run ingestion (once)
+**Step 2 — Start all services:**
 
 ```bash
-python ingest.py
+docker compose up
 ```
 
-Expected output:
-```
-Collection 'hr_resumes' ready.
---------------------------------------------------
-Progress file found: 0 resumes already ingested, skipping them.
---------------------------------------------------
-Ingesting 'ENGINEERING' profession (98 resumes):
-    - [1/2500] 10001.pdf ingested successfully.
-    - [2/2500] 10002.pdf ingested successfully.
-    ...
-```
+This starts Qdrant (vector database) and the screening API together. Qdrant's dashboard will be available at `http://localhost:6333/dashboard`. The API will be available at `http://localhost:8000`, with interactive docs at `http://localhost:8000/docs`.
 
-Ingestion respects the free tier rate limits automatically. If you stop it mid-way, simply re-run — it will skip already-processed files using `ingestion_progress.json`.
-
-With 2,500 resumes and a 5-second delay between calls, full ingestion takes approximately **3.5 hours** of active processing time spread across 3 days (1,000 requests/day limit on free tier).
-
-### Step 2 — Run the screener
+**Step 3 — Run the ingestion pipeline (once, to populate the vector database):**
 
 ```bash
-python main.py
+# In a separate terminal, while docker compose is running:
+docker compose exec api python ingest.py
 ```
 
-Expected output:
-```
-============================================================
-  AI HR Resume Screener
-  Powered by CrewAI + Qdrant RAG
-============================================================
-Checking primary LLM (Gemini)...
-Gemini 2.0 Flash is available. Using as primary LLM.
+This embeds your resume PDFs and stores them in Qdrant. It runs once and is resumable — safe to stop and restart. With 2,500 resumes on Gemini's free tier, expect ~3.5 hours spread across 3 days (1,000 requests/day limit). Progress is saved automatically.
 
-Querying Qdrant for top 10 'ENGINEERING' candidates...
-Retrieved 10 candidates. Handing off to agents...
+**Step 4 — Screen your first batch of candidates:**
 
-[CrewAI verbose logs — agent thinking and actions]
-
-============================================================
-  FINAL HIRING REPORT
-============================================================
-[Report content printed here]
-
-Report saved to hiring_report.md
-```
-
-Total runtime is typically **3–8 minutes** depending on the LLM and the length of the resumes.
-
----
-
-## 9. Module Reference
-
-### 9.1 `ingest.py`
-
-Handles the complete offline ingestion pipeline: PDF text extraction, embedding generation, and Qdrant storage.
-
-#### Key constants
-
-| Constant | Default | Purpose |
-|---|---|---|
-| `DELAY_BETWEEN_REQUESTS` | `5` seconds | Pause between embedding API calls to respect rate limits |
-| `MAX_RETRIES` | `5` | Maximum retry attempts on API failure |
-| `RETRY_WAIT` | `60` seconds | Wait time when a rate limit error is hit |
-| `PROGRESS_FILE` | `ingestion_progress.json` | Tracks which files have already been ingested |
-
-#### Key functions
-
-**`collection_creation()`**
-Creates the Qdrant collection with a named vector config. Skips creation if the collection already exists, making it safe to call on every run.
-
-```python
-vectors_config={
-    "text_vectors": models.VectorParams(
-        size=3072,                      # Gemini embedding dimension
-        distance=models.Distance.COSINE # Best for semantic text similarity
-    )
-}
-```
-
-**`get_embedding_with_retry(text: str) -> list`**
-Calls the Gemini Embedding API and returns a 1D list of 3072 floats. Implements exponential-like retry logic:
-- Sleeps `DELAY_BETWEEN_REQUESTS` seconds after every successful call
-- On 429/quota/rate errors: waits `RETRY_WAIT` seconds and retries
-- On other errors: also waits and retries (network blips, temporary outages)
-- Raises `RuntimeError` after `MAX_RETRIES` consecutive failures
-
-**`qdrant_upsert(id, text, file_path, profession)`**
-Stores a single resume in Qdrant. The vector is stored under the named key `"text_vectors"` (required because the collection uses named vectors). The payload includes:
-
-```python
-payload={
-    "file_path": file_path,        # Original PDF location on disk
-    "profession": profession,       # Career category — used as filter key
-    "resume_content": text          # Full extracted text — passed to agents
-}
-```
-
-**`extract_resume_text(pdf_path: str) -> str`**
-Extracts text from a PDF using `pdfplumber`. Uses `x_tolerance=3, y_tolerance=3` for better handling of multi-column and formatted layouts. Returns an empty string if extraction fails — this is caught by the caller and logged as a warning.
-
-**`main()`**
-Iterates over all career directories and resumes. For each PDF:
-1. Skips if already in progress file
-2. Skips if not a `.pdf` file
-3. Extracts text; skips with warning if empty
-4. Generates integer ID from filename (falls back to UUID if filename is non-numeric)
-5. Upserts to Qdrant
-6. Saves progress immediately after each successful upsert
-
----
-
-### 9.2 `llm.py`
-
-Manages LLM configuration and the primary-to-fallback resolution logic. All agents import the resolved LLM from this module.
-
-#### Configured models
-
-| Variable | Model | Provider | Role |
-|---|---|---|---|
-| `gemini_llm` | `gemini/gemini-3.1-flash-lite-preview` | Google | Primary |
-| `groq_llm` | `groq/llama-3.3-70b-versatile` | Groq | Fallback (open source) |
-| `cohere_llm` | `cohere/command-a-03-2025` | Cohere | Optional alternative |
-| `hunter_llm` | `openrouter/hunter-alpha` | OpenRouter | Optional alternative |
-
-All LLMs are configured via CrewAI's `LLM` class, which uses LiteLLM under the hood. This means model strings follow the `provider/model-name` format.
-
-#### `get_llm_with_fallback(max_retries, retry_wait) -> LLM`
-
-Performs a lightweight connectivity probe on the primary LLM before the crew starts. Returns the primary if available, falls back to Groq if the primary fails `max_retries` times.
-
-This check happens **at import time** in `agents.py`, meaning the LLM is resolved once and shared across all four agents. There is no mid-run switching — the choice is made before the crew begins.
-
-> **Current state:** The function currently returns `hunter_llm` directly (early return for testing). Remove the `return hunter_llm` line on line 2 of the function body to restore the full fallback logic.
-
----
-
-### 9.3 `agents.py`
-
-Defines the four CrewAI agents. Each agent has:
-- **role**: a job title that anchors the agent's persona
-- **goal**: a precise statement of what the agent must produce
-- **backstory**: narrative context that shapes the agent's tone and priorities
-- **`allow_delegation=False`**: prevents agents from handing tasks to each other (keeps the pipeline deterministic)
-- **`llm=llm`**: the resolved LLM from `llm.py`, shared by all agents
-
-#### Agent 1 — `job_analyst`
-
-| Field | Value |
-|---|---|
-| Role | Senior Job Requirements Analyst |
-| Input | Raw job description text |
-| Output | Structured requirements document |
-| Key behavior | Distinguishes must-haves from nice-to-haves; flags ambiguities |
-
-#### Agent 2 — `candidate_retriever`
-
-| Field | Value |
-|---|---|
-| Role | Talent Database Specialist |
-| Input | 10 raw resume texts (pre-retrieved from Qdrant) + requirements doc |
-| Output | 10 clean, structured candidate profiles |
-| Key behavior | Extracts name, title, skills, years of experience, education, achievements. Does not score or judge. |
-
-#### Agent 3 — `candidate_evaluator`
-
-| Field | Value |
-|---|---|
-| Role | Objective Candidate Evaluator |
-| Input | 10 structured profiles + requirements doc |
-| Output | 10 scorecards with numerical scores and verdicts |
-| Key behavior | Applies consistent rubric to all candidates; scores are evidence-backed; verdict is one of STRONG FIT / GOOD FIT / PARTIAL FIT / WEAK FIT |
-
-#### Agent 4 — `report_writer`
-
-| Field | Value |
-|---|---|
-| Role | Executive Talent Report Writer |
-| Input | All scorecards + requirements doc |
-| Output | `hiring_report.md` |
-| Key behavior | Leads with recommendation; produces scannable executive format; avoids HR jargon |
-
----
-
-### 9.4 `tasks.py`
-
-Defines the four tasks and the Qdrant retrieval function. This is the only module that interacts with Qdrant at query time.
-
-#### `retrieve_candidates(job_description, profession) -> str`
-
-Embeds the job description using the Gemini embedding model, then queries Qdrant with a `profession` payload filter and a cosine similarity search:
-
-```python
-hits = qdrant.search(
-    collection_name=COLLECTION,
-    query_vector={"name": "text_vectors", "vector": query_vector},
-    query_filter=Filter(
-        must=[FieldCondition(key="profession", match=MatchValue(value=profession))]
-    ),
-    limit=TOP_K,           # Default: 10
-    with_payload=True,
-)
-```
-
-Returns a formatted multi-line string of all retrieved candidate profiles, ready to be injected into Task 2's description.
-
-#### `build_tasks(job_description, profession) -> list[Task]`
-
-The main function called by `main.py`. It:
-1. Calls `retrieve_candidates()` to fetch the top 10 from Qdrant
-2. Builds all four `Task` objects with the retrieved data already baked into the descriptions
-3. Returns the task list in sequential order
-
-Tasks are connected via the `context` parameter — each task receives the outputs of the tasks listed in its `context`:
-
-```python
-task_evaluate = Task(
-    ...
-    context=[task_analyze_job, task_present_candidates],  # receives both prior outputs
-)
-```
-
-#### Top K configuration
-
-```python
-TOP_K = 10  # number of candidates retrieved from Qdrant
-```
-
-Reduce to `5` if you encounter LLM context window errors (especially on Groq's free tier, which has a 32k token limit for LLaMA 3.3 70B).
-
----
-
-### 9.5 `main.py`
-
-The entry point. Configure your job inputs here and run the crew.
-
-#### Inputs
-
-```python
-JOB_DESCRIPTION = """
-... your job description text ...
-"""
-
-PROFESSION = "ENGINEERING"    # must match profession payload in Qdrant exactly
-```
-
-#### What it does
-
-1. Prints a startup banner
-2. Calls `build_tasks()` which triggers Qdrant retrieval
-3. Assembles the `Crew` with all four agents and tasks
-4. Runs the crew with `Process.sequential`
-5. Prints the final report to stdout
-6. Saves the report to `hiring_report.md`
-
----
-
-## 10. The Agent Pipeline
-
-The pipeline is sequential: each agent completes its task fully before the next agent begins. The context chain ensures every agent has access to all prior outputs.
-
-```
-Job Description
-      │
-      ▼
-┌─────────────────────────────┐
-│  Task 1: Job Analyst        │  ← gets: job description
-│  Produces: requirements doc │
-└──────────────┬──────────────┘
-               │ context
-               ▼
-┌─────────────────────────────┐
-│  Task 2: CV Retriever       │  ← gets: requirements doc + 10 raw resumes
-│  Produces: 10 profiles      │
-└──────────────┬──────────────┘
-               │ context
-               ▼
-┌─────────────────────────────┐
-│  Task 3: Evaluator          │  ← gets: requirements doc + 10 profiles
-│  Produces: 10 scorecards    │
-└──────────────┬──────────────┘
-               │ context
-               ▼
-┌─────────────────────────────┐
-│  Task 4: Report Writer      │  ← gets: requirements doc + 10 scorecards
-│  Produces: hiring_report.md │
-└─────────────────────────────┘
-```
-
-All 10 candidates are processed within each task in a single LLM call. The crew does not loop over candidates one by one — this keeps the pipeline fast and allows the evaluator to compare candidates relatively rather than in isolation.
-
----
-
-## 11. RAG & Qdrant — How Retrieval Works
-
-### Why a vector database?
-
-Traditional keyword search cannot match "5 years building ETL pipelines" with a job description that says "data engineering experience." Vector databases solve this by converting text into numerical representations (embeddings) where semantically similar content is close together in mathematical space.
-
-### Single vector per resume
-
-Each resume is stored as one vector, not chunked into sections. This is the correct approach for candidate matching because:
-
-- The unit of retrieval is a **person**, not a fragment of a document
-- A resume is short enough (600–800 tokens) to fit comfortably within the embedding model's input limit
-- Cross-section relationships (e.g. a candidate whose skills and experience together match the role) are preserved in a single whole-document vector
-
-### Metadata filtering
-
-When the HR manager specifies a career category, Qdrant applies the filter **before** the vector search. This means:
-
-- For a dataset with 2,500 resumes across 24 careers (~104 resumes per category), the search scans ~100 vectors instead of 2,500
-- Results are guaranteed to be from the correct career domain
-- The system scales cleanly to 10,000+ resumes without degrading result quality
-
-### Cosine similarity
-
-The collection uses cosine distance, which measures the angle between two vectors rather than their magnitude. This is optimal for text embeddings because it captures semantic direction (meaning) rather than length (verbosity). A long resume and a short resume with similar content will score similarly.
-
----
-
-## 12. LLM Strategy — Primary & Fallback
-
-### Why two LLMs?
-
-Building demos on a single API creates a single point of failure. Rate limits, temporary outages, and quota exhaustion are common during testing. A fallback LLM eliminates this risk.
-
-### Resolution logic
-
-```
-Startup
-   │
-   ├─► Probe Gemini (attempt 1 of 3)
-   │     Success? ──► Use Gemini for all agents
-   │     Failure? ──► Wait 15s, retry
-   │
-   ├─► Probe Gemini (attempt 2 of 3)
-   │     Success? ──► Use Gemini for all agents
-   │     Failure? ──► Wait 15s, retry
-   │
-   ├─► Probe Gemini (attempt 3 of 3)
-   │     Success? ──► Use Gemini for all agents
-   │     Failure? ──► Switch to fallback
-   │
-   └─► Use LLaMA 3.3 70B (Groq)
-```
-
-The LLM is resolved **once at startup**, before the crew runs. All four agents share the same resolved instance. There is no mid-run switching.
-
-### Model comparison
-
-| | Gemini 2.0 Flash | LLaMA 3.3 70B (Groq) |
-|---|---|---|
-| Type | Proprietary | Open source |
-| Provider | Google | Meta (via Groq) |
-| Speed | Fast | Very fast (Groq inference) |
-| Context window | 1M tokens | 128k tokens |
-| Free tier | Yes | Yes |
-| Best for | Long context, structured output | Strong reasoning, open source demos |
-
-### Groq context limit note
-
-Groq's LLaMA 3.3 70B has a 128k context window, but the free tier request limit is lower. If you pass 10 full resumes to the agents and hit a context error, reduce `TOP_K` in `tasks.py` from `10` to `5`.
-
----
-
-## 13. Output — The Hiring Report
-
-The final output is a markdown file (`hiring_report.md`) with six sections:
-
-```
-# Hiring Report — [Role] — [Date]
-
-## 1. Executive Summary
-3–4 sentences: what role, how many reviewed, key finding, top recommendation.
-
-## 2. Ranked Shortlist Table
-| Rank | Candidate | Overall Score | Verdict |
-|------|-----------|---------------|---------|
-| 1    | ...       | 8.5/10        | STRONG FIT |
-...
-
-## 3. Top 3 Candidates — Detailed Profiles
-Full scorecard for candidates ranked 1–3.
-Suggested interview focus areas for each.
-
-## 4. Candidates to Consider
-Candidates ranked 4–6 worth keeping in the pipeline.
-
-## 5. Not Recommended
-One-sentence explanation for why each of the bottom candidates does not fit.
-
-## 6. Final Recommendation
-A clear, unambiguous hiring recommendation naming the top candidate and the reason.
-```
-
----
-
-## 14. Troubleshooting
-
-### Qdrant connection refused
-
-```
-httpx.ConnectError: [Errno 111] Connection refused
-```
-
-Qdrant is not running. Start it:
 ```bash
-docker start qdrant
-# or if first time:
-docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
+curl -X POST http://localhost:8000/screen \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_description": "We are looking for a Senior Data Engineer with 5+ years of experience building ETL pipelines, strong Python skills, and familiarity with cloud platforms (AWS or GCP).",
+    "profession": "ENGINEERING",
+    "top_k": 10
+  }'
 ```
 
-### Collection already exists error during ingestion
+The endpoint returns a `job_id` immediately. Poll for your results:
 
-`ingest.py` checks for existing collections before creating. If you see an unexpected error here, check that your Qdrant container is the correct version and that the collection schema matches what the code expects.
-
-### Empty profession filter returns no results
-
-```
-No candidates found in the database for this profession and job description.
+```bash
+curl http://localhost:8000/jobs/{job_id}
 ```
 
-The `PROFESSION` value in `main.py` does not match what is stored in Qdrant. Check stored values:
-```python
-from qdrant_client import QdrantClient
-client = QdrantClient("http://localhost:6333")
-result = client.scroll("hr_resumes", limit=5, with_payload=True)
-print(set(p.payload["profession"] for p in result[0]))
-```
+When status is `"complete"`, the response includes the full ranked hiring report as structured JSON, plus a `hiring_report.md` saved to the `outputs/` volume.
 
-### Gemini rate limit during ingestion
+> **No Docker?** See the [manual installation guide](#6-installation) further below for step-by-step setup with a local Python environment.
 
-```
-[Rate limit] Attempt 1/5 — waiting 60s before retry...
-```
+---
 
-This is expected behavior, not an error. The retry logic will handle it automatically. If ingestion stops entirely after 5 retries, you have hit the daily quota (1,000 requests/day on free tier). Stop the script and re-run it the next day — `ingestion_progress.json` will resume from where you left off.
+# Repository Structure
 
-### LLM context window error
+This document explains every file and folder in the AI HR Resume Screener codebase — what each one does, why it exists, and how the pieces connect to each other. It covers both the current state of the repository and the planned structure as the project grows toward a production-ready API with Docker support.
+
+---
+
+## Current structure at a glance
 
 ```
-Error: context length exceeded
-```
-
-Reduce the number of retrieved candidates. In `tasks.py`:
-```python
-TOP_K = 5  # reduce from 10
-```
-
-### CrewAI agents not seeing each other's outputs
-
-Ensure the `context` parameter in each task includes all prior tasks that agent needs:
-```python
-task_evaluate = Task(
-    ...
-    context=[task_analyze_job, task_present_candidates],  # both required
-)
-```
-
-### Named vector error on upsert
-
-```
-VectorError: Vector 'text_vectors' not found
-```
-
-The collection was created with named vectors but the upsert is not using the vector name. Ensure the upsert uses:
-```python
-vector={"text_vectors": embeddings}   # dict, not a plain list
+AI-HR-Screen-Tool/
+│
+├── Core pipeline (the 5 modules that run the system)
+│   ├── main.py                     ← entry point: configure + launch the crew
+│   ├── agents.py                   ← defines the 4 CrewAI agent personas
+│   ├── tasks.py                    ← defines the 4 tasks + Qdrant retrieval
+│   ├── llm.py                      ← LLM configuration + Gemini/Groq fallback
+│   └── ingest.py                   ← Phase 1: PDF extraction + vector DB population
+│
+├── Data (your resume library — not committed to git)
+│   └── data/
+│       └── data/
+│           ├── ACCOUNTING/         ← one folder per career category
+│           ├── ENGINEERING/        ← folder name = "profession" field in Qdrant
+│           ├── FINANCE/
+│           └── ... (24 total)
+│
+├── Auto-generated at runtime (not committed to git)
+│   ├── hiring_report.md            ← the final output produced by the crew
+│   ├── ingestion_progress.json     ← checkpoint file: tracks which PDFs are done
+│   └── failed_ingestions.json      ← log of PDFs that failed to embed
+│
+├── Config / secrets (never committed to git)
+│   └── .env                        ← your API keys live here
+│
+└── Documentation
+    └── README.md                   ← main project documentation
 ```
 
 ---
 
-## 15. Design Decisions & Rationale
+## The 5 core modules in depth
 
-### Why CrewAI over a single LLM call?
+Understanding this codebase is easiest if you think about the **direction of data flow**. These five files form a chain, and data passes through them in a strict order each time you run a screening job. Here is the chain in plain language:
 
-A single LLM call with all instructions produces inconsistent results when the prompt is complex. Breaking the work into four focused agents — each with a clear, narrow responsibility — produces more reliable, auditable output. Each agent's output can be inspected independently, and if one step fails the others are unaffected.
+```
+.env → llm.py → agents.py → tasks.py → main.py → hiring_report.md
+                                 ↑
+                            Qdrant (populated by ingest.py, run separately)
+```
 
-### Why Qdrant over a simple list comparison?
-
-With 2,500 resumes, sending all of them to an LLM is prohibitively expensive (token cost and latency). Qdrant allows the system to retrieve only the semantically relevant subset in milliseconds, with metadata filtering ensuring the results come from the correct career domain. This is the RAG pattern — retrieval before generation.
-
-### Why a single vector per resume instead of chunking?
-
-Chunking is appropriate when the unit of retrieval is a section of a document (e.g. retrieving a specific clause from a 50-page legal contract). Here, the unit of retrieval is a whole person. A resume is short enough to embed as a single document (600–900 tokens), and a whole-document vector preserves cross-section relationships (skills + experience together) that averaged chunk vectors would lose.
-
-### Why metadata filtering instead of separate collections?
-
-Separate Qdrant collections per career category would achieve the same filtering effect but would require managing 24 connection objects, separate upsert logic per collection, and complex queries if you ever want to search across categories. Payload metadata filtering achieves the same result — pre-filtering the search space before vector comparison — with a single collection and a one-line filter parameter.
-
-### Why cosine distance instead of dot product or Euclidean?
-
-Cosine similarity measures the angle between vectors, which captures semantic direction regardless of vector magnitude. For text embeddings, a long detailed resume and a short resume covering the same skills will produce vectors of different magnitudes but similar directions. Cosine distance treats them as equally similar to a matching query. Euclidean distance would penalize the shorter resume unfairly.
-
-### Why Gemini embeddings for both ingestion and query?
-
-The embedding model used to encode resumes must be identical to the model used to encode the query at search time. Using different models would produce vectors in different mathematical spaces, making similarity scores meaningless. Both ingestion and query use `gemini-embedding-001` with `task_type="SEMANTIC_SIMILARITY"`.
+Reading the files in the order below follows that chain and makes the most sense.
 
 ---
 
-*Built for NationAI · Applied AI Instructor Demo · March 2026*
+### `llm.py` — the base of the chain
+
+This is the first file that executes at runtime, because `agents.py` imports from it at the module level (meaning the import itself triggers the LLM resolution). Its job is to answer one question before anything else runs: which language model will we use for this session?
+
+The file defines four LLM objects using CrewAI's `LLM` class (which wraps LiteLLM under the hood): `gemini_llm` as the primary, `groq_llm` as the open-source fallback, and `cohere_llm` and `hunter_llm` as optional alternatives. The function `get_llm_with_fallback()` probes the primary LLM with a lightweight test call, retries up to three times, and returns the Groq model if Gemini is unavailable.
+
+**One thing to fix in this file:** there is currently an early `return hunter_llm` at the top of `get_llm_with_fallback()` that bypasses the entire probe-and-fallback logic. This was added for testing purposes. Remove that line to restore the intended behaviour.
+
+**What other files depend on this:** `agents.py` imports `get_llm_with_fallback` and calls it once at the top of the module, storing the result in a variable called `llm`. All four agents then receive that same resolved instance. The LLM is chosen once and shared — there is no per-agent or mid-run switching.
+
+---
+
+### `agents.py` — the four reasoning personas
+
+This file defines the four CrewAI `Agent` objects that make up the pipeline. Each agent is a configuration object: it has a `role` (a job title that anchors the persona), a `goal` (a precise description of the output it must produce), and a `backstory` (narrative context that shapes how the LLM approaches the task). None of these contain actual logic — they are prompt engineering constructs that tell the LLM how to behave.
+
+The four agents are:
+
+`job_analyst` acts as a Senior Job Requirements Analyst. It receives the raw job description and its sole responsibility is to produce a structured breakdown of must-have skills, preferred skills, experience levels, and key responsibilities. Its output becomes the shared reference document that every other agent consults.
+
+`candidate_retriever` acts as a Talent Database Specialist. It receives the 10 raw resume texts that were pre-retrieved from Qdrant by `tasks.py`, along with the job analyst's structured requirements. Its job is to clean and structure each candidate's profile — extracting name, skills, experience, and education — without scoring or judging anyone. It is deliberately kept neutral at this stage.
+
+`candidate_evaluator` acts as an Objective Candidate Evaluator. It receives the clean profiles from the retriever and applies a consistent rubric to score each candidate from 0 to 10. The backstory explicitly instructs the LLM to treat every CV as a set of evidence points — no gut feelings, no names, no bias. The output is a scorecard for each candidate with an overall score, a skills match score, an experience score, strengths, gaps, and a one-line verdict.
+
+`report_writer` acts as an Executive Talent Report Writer. It receives all scorecards and produces the final `hiring_report.md` — a polished, scannable document that a hiring committee can read in three minutes. The backstory deliberately models the persona of a former Chief People Officer who knows that busy executives need the recommendation on the first page.
+
+All four agents have `allow_delegation=False`. This is important: it prevents any agent from handing tasks to another agent mid-run, which would break the sequential pipeline guarantee and make the system non-deterministic.
+
+**What other files depend on this:** `main.py` imports all four agent objects by name to assemble the `Crew`.
+
+---
+
+### `tasks.py` — the work orders and the Qdrant bridge
+
+This file does two distinct things and it is worth understanding them separately.
+
+The first thing it does is define the `retrieve_candidates()` function, which is the only place in the codebase that talks to Qdrant at query time. It embeds the job description using the same Gemini embedding model used during ingestion (this is non-negotiable — you must use the same model on both sides, or the vectors live in different mathematical spaces and similarity scores become meaningless). It then calls `qdrant.search()` with a `profession` metadata filter and retrieves the top-K most semantically similar candidates using cosine similarity. The results are formatted into a multi-line string that gets injected directly into Task 2's description.
+
+The second thing it does is define `build_tasks()`, which creates all four `Task` objects. Each task has a `description` (the instructions given to the assigned agent), an `expected_output` (what the agent should produce), an `agent` (which of the four handles it), and a `context` list. The `context` parameter is how tasks pass their outputs forward: Task 3 (evaluator) lists Task 1 and Task 2 in its context, so it automatically receives both the structured requirements and the clean profiles as inputs. Task 4 (report writer) lists all prior tasks. This chaining is what makes the pipeline work without any manual wiring.
+
+**What other files depend on this:** `main.py` calls `build_tasks()` and passes the result to the `Crew`. `tasks.py` in turn imports the four agent objects from `agents.py`.
+
+**One constant to know about:** `TOP_K = 10` at the top of the file controls how many candidates are retrieved from Qdrant. If you encounter context window errors (most likely on Groq's free tier, which has a lower per-request limit than the 128k window suggests), reduce this to 5.
+
+---
+
+### `main.py` — the entry point and the only file you edit per job
+
+This is the file an HR manager would interact with in the current CLI version. It contains two hardcoded variables at the top — `JOB_DESCRIPTION` and `PROFESSION` — which is what you customize for each screening run. Everything else is automated.
+
+The `main()` function assembles the `Crew` object with all four agents and tasks, sets `process=Process.sequential` (tasks run in strict order, each one feeding into the next), and calls `crew.kickoff()`. The result is a string containing the final hiring report, which is both printed to stdout and saved to `hiring_report.md`.
+
+One of the roadmap items is to replace the hardcoded variables here with `argparse` so that the tool can be called from the command line without editing source code: `python main.py --profession ENGINEERING --top-k 5 --job-desc-file jd.txt`. This is a small change with a large quality-of-life impact.
+
+**What other files depend on this:** nothing — `main.py` is the top of the chain. It imports from `agents.py` and `tasks.py` but nothing imports from it.
+
+---
+
+### `ingest.py` — the one-time setup script
+
+This file runs separately from the main pipeline and only needs to be run once (or when you add new resumes to the database). It handles the offline ingestion phase: extracting text from your 2,500 PDF resumes, embedding each one with Gemini Embedding 001, and storing the resulting vectors in Qdrant with metadata.
+
+The embedding model produces 3,072-dimensional float vectors. Each vector is stored in a Qdrant collection named `hr_resumes` under a named vector key `"text_vectors"`. Alongside the vector, three metadata fields are stored as a payload: `profession` (the directory name, which becomes the filter key at query time), `resume_content` (the full extracted text, which is passed to the agents), and `file_path` (the original location on disk).
+
+The file includes robust rate-limit handling for Gemini's free tier (100 requests/minute, 1,000 per day). After every successful embedding it writes the file path to `ingestion_progress.json`, so if the script stops for any reason — a rate limit, a power cut, hitting the daily quota — you can re-run it and it will skip all already-processed files and pick up where it left off.
+
+**What other files depend on this:** nothing at runtime. `ingest.py` is a standalone preparation script. The Qdrant collection it populates is then read by `tasks.py` at query time, but there is no direct code dependency between the two files.
+
+---
+
+## The data folder
+
+```
+data/
+└── data/
+    ├── ACCOUNTING/
+    │   ├── 10001.pdf
+    │   ├── 10002.pdf
+    │   └── ...
+    ├── ENGINEERING/
+    ├── FINANCE/
+    ├── FITNESS/
+    └── ... (24 career categories total)
+```
+
+The nested `data/data/` path is a quirk of how the dataset was originally downloaded. The outer `data/` folder is the repo-level container; the inner `data/` is from the dataset's own packaging. This is harmless but worth knowing so you do not get confused when reading `ingest.py`'s path traversal code.
+
+The folder names are significant. They become the `profession` field stored in Qdrant during ingestion, and they must exactly match the `PROFESSION` value you set in `main.py` when running a query. The match is case-sensitive. If the folder is named `ENGINEERING`, then `PROFESSION = "engineering"` will return zero results.
+
+**This entire folder should be in `.gitignore`.** PDF files are large, and 2,500 of them would make the repository unusable for anyone who tries to clone it. The data is the user's responsibility to obtain and place locally.
+
+---
+
+## Auto-generated files
+
+These three files are created by the system at runtime. They should all be in `.gitignore` and should never be committed to the repository.
+
+`hiring_report.md` is the final output of each screening run, written by `main.py` after the crew finishes. It is overwritten on every run, so if you want to preserve a report, rename it or move it before running again. One of the roadmap items is to add a timestamped output directory so historical reports are not lost.
+
+`ingestion_progress.json` is written by `ingest.py` after each successful PDF embedding. It contains a list of file paths that have already been processed. The script reads this list at startup and skips any files that appear in it, making ingestion safely resumable. Do not delete this file mid-ingestion unless you want to re-embed everything from scratch.
+
+`failed_ingestions.json` is also written by `ingest.py` and contains file paths where embedding failed after all retry attempts. These are typically PDFs that are corrupted, password-protected, or empty. You can inspect this file after ingestion to decide whether to fix or discard those files.
+
+---
+
+## Config and secrets
+
+`**.env**` holds your API keys and should never be committed to git. The `.gitignore` file should explicitly list `.env` to make this hard to accidentally violate. The file should contain at minimum:
+
+```
+GEMINI_API_KEY=your_key_here
+GROQ_API_KEY=your_key_here
+```
+
+Optionally you can also add `OPENROUTER_API_KEY` and `COHERE_API_KEY` for the alternative LLMs defined in `llm.py`, but they are not needed for the default pipeline.
+
+**`.env.example`** is a file that should exist in the repo but currently does not. It should be a copy of `.env` with placeholder values instead of real keys, along with comments explaining where to obtain each one. Its purpose is to tell a new contributor exactly what credentials they need without exposing yours. Create this file and commit it.
+
+---
+
+## What is missing from the current structure
+
+Based on the roadmap, the following files and folders will be added as the project matures. This section serves as a map of what is coming so that the structure does not feel incomplete — it is intentionally being built in stages.
+
+**`requirements.txt`** — currently missing. Anyone who clones the repo has no record of which packages to install beyond what is documented in the README. Add this immediately with `pip freeze > requirements.txt` (after activating your virtual environment) or maintain it manually. For a tighter dependency specification, `requirements.txt` for runtime and `requirements-dev.txt` for testing and development tools is a good pattern.
+
+**`LICENSE`** — currently missing. The README badge says MIT but without an actual `LICENSE` file in the root, GitHub does not recognise the license and will not display it in the repository sidebar. Create a `LICENSE` file with the standard MIT text.
+
+**`.gitignore`** — currently missing from what is visible. A proper `.gitignore` for this project should exclude `.env`, `data/`, `*.pdf`, `hiring_report.md`, `ingestion_progress.json`, `failed_ingestions.json`, `__pycache__/`, `*.pyc`, `venv/`, `.env`, and (once added) `outputs/`.
+
+**`api/`** — planned in Phase 2 of the roadmap. This folder will contain the FastAPI application that wraps the CrewAI pipeline behind REST endpoints. The intended structure is `api/main.py` (the FastAPI app and route definitions), `api/schemas.py` (the Pydantic models for request and response validation), and `api/dependencies.py` (shared FastAPI dependencies like API key auth and rate limiting).
+
+**`tests/`** — planned alongside the API work. This folder will contain `pytest` tests for the API endpoints using `httpx`'s async test client. The most important tests to write first are the health check endpoint, input validation (invalid profession name, job description that is too short or too long), and a mocked screening run that does not actually call the LLM or Qdrant.
+
+**`Dockerfile` and `docker-compose.yml`** — planned in Phase 3. The `Dockerfile` will use a multi-stage build (builder stage installs dependencies, runtime stage copies only what is needed to run). The `docker-compose.yml` will define three services: `qdrant` with a named volume for data persistence, `api` (your FastAPI app), and `redis` for background task queuing. These two files live in the repository root.
+
+**`.dockerignore`** — created alongside the Dockerfile. It should exclude `data/`, `*.pdf`, `venv/`, `.env`, `__pycache__`, `*.pyc`, `ingestion_progress.json`, `failed_ingestions.json`, and `hiring_report.md`. Without this file, Docker will send all 2,500 PDFs into the build context on every `docker build`, making builds extremely slow.
+
+**`.github/workflows/`** — planned as the CI/CD layer. At minimum, two workflow files: `ci.yml` (runs `pytest` on every push and pull request) and `docker-publish.yml` (builds and pushes the Docker image to GitHub Container Registry on every push to `main`).
+
+**`docs/`** — planned as the home for static assets referenced in the README. The first thing to add here is a PNG or SVG version of the architecture diagram, replacing the ASCII art currently in the README with an embedded image.
+
+**`outputs/`** — planned as a timestamped output directory for hiring reports. Instead of overwriting `hiring_report.md` on every run, the system will write to `outputs/ENGINEERING_2026-05-08_143022.md` (or `.json` once structured output is added). This folder should be in `.gitignore` but should contain a `.gitkeep` file so the empty directory is tracked by git and created automatically on clone.
+
+---
+
+## Target structure after the roadmap is complete
+
+This is what the repository will look like once all five roadmap phases are finished. Use this as a reference when making structural decisions along the way.
+
+```
+AI-HR-Screen-Tool/
+│
+├── Core pipeline
+│   ├── main.py                         ← CLI entry point (argparse-driven)
+│   ├── agents.py                       ← 4 CrewAI agent definitions
+│   ├── tasks.py                        ← 4 tasks + Qdrant retrieval
+│   ├── llm.py                          ← LLM config + fallback resolution
+│   └── ingest.py                       ← one-time PDF ingestion script
+│
+├── API layer (Phase 2)
+│   └── api/
+│       ├── main.py                     ← FastAPI app: routes, startup, middleware
+│       ├── schemas.py                  ← Pydantic models: request + response types
+│       └── dependencies.py            ← API key auth, rate limiter, Qdrant client
+│
+├── Tests (Phase 2)
+│   └── tests/
+│       ├── conftest.py                 ← shared fixtures (mock crew, mock Qdrant)
+│       ├── test_health.py             ← health check endpoint tests
+│       ├── test_screen.py             ← screening endpoint: valid + invalid inputs
+│       └── test_professions.py        ← professions listing endpoint tests
+│
+├── Docker (Phase 3)
+│   ├── Dockerfile                      ← multi-stage build: builder + runtime
+│   ├── docker-compose.yml             ← qdrant + api + redis services
+│   └── .dockerignore                   ← excludes data/, PDFs, venv, .env
+│
+├── CI/CD (Phase 3)
+│   └── .github/
+│       └── workflows/
+│           ├── ci.yml                  ← pytest on push + pull request
+│           └── docker-publish.yml      ← build + push to GHCR on main
+│
+├── Documentation assets
+│   └── docs/
+│       └── architecture.png           ← visual architecture diagram for README
+│
+├── Generated outputs (gitignored, but directory tracked)
+│   └── outputs/
+│       ├── .gitkeep                    ← keeps the empty folder in git
+│       └── ENGINEERING_2026-05-08.md  ← example timestamped hiring report
+│
+├── Data (gitignored — too large to commit)
+│   └── data/
+│       └── data/
+│           ├── ENGINEERING/
+│           ├── FINANCE/
+│           └── ... (24 career categories)
+│
+├── Runtime files (gitignored — auto-generated)
+│   ├── ingestion_progress.json
+│   └── failed_ingestions.json
+│
+├── Config (gitignored for secrets, committed for templates)
+│   ├── .env                            ← your actual API keys (never commit)
+│   └── .env.example                   ← placeholder template (commit this)
+│
+├── Dependency management
+│   ├── requirements.txt               ← runtime dependencies
+│   └── requirements-dev.txt          ← dev + test dependencies (pytest, httpx)
+│
+├── Project metadata
+│   ├── README.md                       ← main documentation
+│   ├── REPO_STRUCTURE.md              ← this document
+│   └── LICENSE                         ← MIT license text
+│
+└── Git config
+    └── .gitignore
+```
+
+---
+
+## Quick reference: which files to edit vs which to leave alone
+
+As a rule of thumb, the files you will touch regularly are `main.py` (to change the job description and profession for each run), `llm.py` (to switch the active LLM or fix the early return), and `agents.py` (if you want to refine an agent's goal or backstory). The files you will rarely touch are `tasks.py` (unless you are adding a new task or changing `TOP_K`) and `ingest.py` (unless you are adding a new career category to the dataset). The auto-generated files (`hiring_report.md`, `ingestion_progress.json`, `failed_ingestions.json`) should never be edited manually.
+
+When the API layer is added, `api/schemas.py` becomes the most frequently edited file as the output schema evolves, and `api/main.py` is where you add new endpoints. The core pipeline files (`agents.py`, `tasks.py`) remain stable and are only modified when the pipeline's behaviour needs to change — not when new API features are added.
+
+---
+
+*Last updated: May 2026 — reflects the current codebase at commit 8 on `main` and the planned structure through Phase 3 of the project roadmap.*
