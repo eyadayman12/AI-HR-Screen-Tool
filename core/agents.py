@@ -1,9 +1,7 @@
 from crewai import Agent
-from llm import get_llm_with_fallback
-from dotenv import load_dotenv
+from core.llm import  gemini_llm
 
-load_dotenv()
-llm = get_llm_with_fallback()
+llm = gemini_llm
 
 job_analyst = Agent(
     role="Senior Job Requirements Analyst",

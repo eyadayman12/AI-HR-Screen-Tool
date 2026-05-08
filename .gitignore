@@ -1,16 +1,9 @@
-# Data and large files
 data/
 ingestion_progress.json
-
-# Environment variables and secrets
+failed_ingestions.json
 .env
-
-# Python internals
 __pycache__/
 *.pyc
-
-# Virtual environments
 hr_env/
-
-# Development notebooks
 playground.ipynb
+hiring_report.md

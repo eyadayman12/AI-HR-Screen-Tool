@@ -1,45 +1,33 @@
 from crewai import LLM
-import os
 import time
-from dotenv import load_dotenv
-
-load_dotenv()
-
-
-# ── LLM DEFINITIONS ───────────────────────────────────────────────────────────
+from core.settings_config import settings
 
 hunter_llm = LLM(
-    model="openrouter/openrouter/hunter-alpha",
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1",
-    temperature=0.0,
+    model = settings.openrouter_model,
+    base_url = settings.openrouter_base_url,
+    temperature=settings.model_temperature,
 )
 
 cohere_llm = LLM(
-    model="cohere/command-a-03-2025",
-    temperature=0.0,
-    api_key=os.getenv("COHERE_API_KEY"),
+    model= settings.cohere_model,
+    temperature=settings.model_temperature,
 )
 
 gemini_llm = LLM(
-    model="gemini/gemini-3.1-pro-preview",
-    api_key=os.getenv("GEMINI_API_KEY"),
-    temperature=0.2,
+    model=settings.gemini_model,
+    temperature=settings.model_temperature,
 )
 
 groq_llm = LLM(
-    model="groq/llama-3.3-70b-versatile",
-    api_key=os.getenv("GROQ_API_KEY"),
-    temperature=0.2,
+    model = settings.groq_model,
+    temperature= settings.model_temperature,
 )
 
-# Ordered fallback chain — first available wins at startup,
-# and ResilientLLM cascades through this list on mid-run failures.
+
 FALLBACK_CHAIN = [gemini_llm, cohere_llm, hunter_llm, groq_llm]
 FALLBACK_NAMES = ["Gemini 3.1 pro", "Cohere Command-A", "Hunter Alpha (OpenRouter)", "LLaMA 3.3 70B (Groq)"]
 
 
-# ── RESILIENT WRAPPER ─────────────────────────────────────────────────────────
 
 class ResilientLLM:
 
@@ -100,7 +88,6 @@ class ResilientLLM:
         return f"ResilientLLM(active={self._active_name})"
 
 
-# ── STARTUP PROBE ─────────────────────────────────────────────────────────────
 
 def get_llm_with_fallback() -> ResilientLLM:
     """
@@ -110,7 +97,6 @@ def get_llm_with_fallback() -> ResilientLLM:
     If all probes fail, still return a ResilientLLM starting at index 0
     (Hunter) — the actual failure will be caught and cascaded at call time.
     """
-    return cohere_llm
     probe_message = [{"role": "user", "content": "reply with the single word: ok"}]
     for i, (llm, name) in enumerate(zip(FALLBACK_CHAIN, FALLBACK_NAMES)):
         print(f"  Probing {name}...")
