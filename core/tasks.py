@@ -1,14 +1,15 @@
 from crewai import Task
 from core.agents import job_analyst, candidate_retriever, candidate_evaluator, report_writer
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue
 from google import genai
 from google.genai import types
 from core.settings_config import settings
+import cohere
 
 qdrant_config = settings.qdrant_host + ":" + str(settings.qdrant_port)
 qdrant = QdrantClient(qdrant_config, timeout=settings.qdrant_timeout)
 gemini_client = genai.Client()
+co = cohere.ClientV2()
 
 REPORT_SECTIONS = [
     "ROLE REQUIREMENTS RECAP",
@@ -24,7 +25,7 @@ REPORT_SECTIONS = [
     "FINAL RECOMMENDATION",
 ]
 
-def retrieve_candidates(job_description: str, profession: str) -> str:
+def retrieve_candidates(job_description: str, profession: str="NO PROFESSION") -> str:
     """
     Embed the job description, query Qdrant with a profession filter,
     and return the top K candidate profiles as a formatted string.
@@ -49,18 +50,34 @@ def retrieve_candidates(job_description: str, profession: str) -> str:
         return "No candidates found in the database for this profession and job description."
 
     profiles = []
+    candidates = []
+
     for i, hit in enumerate(hits.points, 1):
         payload = hit.payload
+        content = payload.get('resume_content', 'No content available')
         profiles.append(
             f"CANDIDATE {i} (similarity score: {hit.score:.3f})\n"
             f"Profession: {payload.get('profession', 'N/A')}\n"
             f"---\n"
-            f"{payload.get('resume_content', 'No content available')}\n"
+            f"{content}\n"
         )
+        candidates.append(content)
 
-    return "\n\n".join(profiles)
+    reranked_results = co.rerank(
+        model=settings.reranker_model,
+        query=job_description,
+        documents=candidates,
+        top_n=settings.rank_top_k,
+    )
 
-def build_tasks(job_description: str, profession: str) -> list:
+    returned_results = []
+
+    for result in reranked_results.results:
+        returned_results.append(profiles[result.index])
+
+    return "\n\n".join(returned_results)
+
+def build_tasks(job_description: str, profession: str="NO PROFESSION") -> list:
     """
     Build the 4 tasks for the crew.
     Qdrant retrieval happens here (before agents run) and the results
