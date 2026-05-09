@@ -28,6 +28,7 @@ job_reports: Dict[str, Dict] = {}
 
 def parse_output(raw_output: str) -> tuple:
     """Parse the crew output to extract JSON and markdown sections."""
+    
     separator = "=== MARKDOWN REPORT ==="
     if separator in raw_output:
         parts = raw_output.split(separator)
@@ -97,7 +98,6 @@ async def run_screening_job(job_id: str, job_description: str, profession: str, 
     except Exception as e:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
-        # Restore original top_k
         settings.top_k = original_top_k
 
 
@@ -115,16 +115,16 @@ async def screen_candidates(
     Returns a job_id for tracking the asynchronous screening process.
     Rate limited to 5 requests per hour per IP address.
     """
-    # Validate profession against Qdrant (basic validation)
-    # In production, query Qdrant to get valid professions
+    """
     valid_professions = ["ENGINEERING", "FINANCE", "ACCOUNTING", "SALES", "MARKETING", 
-                         "HR", "OPERATIONS", "LEGAL", "HEALTHCARE", "EDUCATION"]
+                         "HR", "OPERATIONS", "LEGAL", "HEALTHCARE", "EDUCATION", "NO PROFESSION"]
     
     if screening_request.profession.upper() not in [p.upper() for p in valid_professions]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Invalid profession '{screening_request.profession}'. Valid professions: {', '.join(valid_professions)}"
         )
+    """
     
     # Generate job ID
     job_id = str(uuid.uuid4())
@@ -238,10 +238,8 @@ async def get_professions():
         qdrant_config = settings.qdrant_host + ":" + str(settings.qdrant_port)
         qdrant_client = QdrantClient(qdrant_config, timeout=settings.qdrant_timeout)
         
-        # Scroll through collection to get unique professions
         from qdrant_client.models import ScrollRequest, Filter, PayloadSelector
         
-        # For now, return a static list (in production, query Qdrant)
         professions = [
             "ENGINEERING", "FINANCE", "ACCOUNTING", "SALES", "MARKETING",
             "HR", "OPERATIONS", "LEGAL", "HEALTHCARE", "EDUCATION",
